@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <div id="root"></div>
+</body>
+<!-- This setup is not suitable for production. -->
+<!-- Only use it in development! -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script async src="https://ga.jspm.io/npm:es-module-shims@1.7.0/dist/es-module-shims.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react?dev",
+    "react-dom/client": "https://esm.sh/react-dom/client?dev"
+  }
+}
+</script>
+<script type="text/babel" data-type="module">
+import React, { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+
+import { useState, useRef, useEffect } from "react";
+
+const VAT_RATES = {
+  "Austria": 20, "Belgium": 21, "Bulgaria": 20, "Croatia": 25, "Cyprus": 19,
+"Czech Republic": 21, "Denmark": 25, "Estonia": 22, "Finland": 25.5, "France": 20,
+"Germany": 19, "Greece": 24, "Hungary": 27, "Ireland": 23, "Italy": 22,
+"Latvia": 21, "Lithuania": 21, "Luxembourg": 17, "Malta": 18, "Netherlands": 21,
+"Poland": 23, "Portugal": 23, "Romania": 21, "Slovakia": 23, "Slovenia": 22,
+"Spain": 21, "Sweden": 25, "United Kingdom": 20, "Other": 0
+};
+
+function encodeCode128(text) {
+  const CODE128_B_START = 104;
+  const CODE_STOP = 106;
+  const patterns = [
+    "11011001100","11001101100","11001100110","10010011000","10010001100",
+    "10001001100","10011001000","10011000100","10001100100","11001001000",
+    "11001000100","11000100100","10110011100","10011011100","10011001110",
+    "10111001100","10011101100","10011100110","11001110010","11001011100",
+    "11001001110","11011100100","11001110100","11101101110","11101001100",
+    "11100101100","11100100110","11101100100","11100110100","11100110010",
+    "11011011000","11011000110","11000110110","10100011000","10001011000",
+    "10001000110","10110001000","10001101000","10001100010","11010001000",
+    "11000101000","11000100010","10110111000","10110001110","10001101110",
+    "10111011000","10111000110","10001110110","11101110110","11010001110",
+    "11000101110","11011101000","11011100010","11011101110","11101011000",
+    "11101000110","11100010110","11101101000","11101100010","11100011010",
+    "11101111010","11001000010","11110001010","10100110000","10100001100",
+    "10010110000","10010000110","10000101100","10000100110","10110010000",
+    "10110000100","10011010000","10011000010","10000110100","10000110010",
+    "11000010010","11001010000","11110111010","11000010100","10001111010",
+    "10100111100","10010111100","10010011110","10111100100","10011110100",
+    "10011110010","11110100100","11110010100","11110010010","11011011110",
+    "11011110110","11110110110","10101111000","10100011110","10001011110",
+    "10111101000","10111100010","11110101000","11110100010","10111011110",
+    "10111101110","11101011110","11110101110","11010000100","11010010000",
+    "11010011100","1100011101011"
+  ];
+  let checksum = CODE128_B_START;
+  let binary = patterns[CODE128_B_START];
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i) - 32;
+    checksum += (i + 1) * code;
+    binary += patterns[code];
+  }
+  binary += patterns[checksum % 103];
+  binary += patterns[CODE_STOP];
+  return binary;
+}
+
+function drawBarcode(canvas, text) {
+  if (!canvas || !text) return;
+  const binary = encodeCode128(text);
+  const barW = 2;
+  const W = binary.length * barW + 20;
+  const H = 46;
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#000";
+  for (let i = 0; i < binary.length; i++) {
+    if (binary[i] === "1") ctx.fillRect(10 + i * barW, 0, barW, H);
+  }
+}
+
+const Field = ({ label, children }) => (
+  <div style={{ marginBottom: 12 }}>
+    <label style={{ display: "block", fontSize: 11, fontWeight: "bold", color: "#555", marginBottom: 3 }}>{label}</label>
+    {children}
+  </div>
+);
+
+const inp = { width: "100%", padding: "6px 8px", fontSize: 12, border: "1px solid #ccc", borderRadius: 4, fontFamily: "Arial" };
+
+let App = function App() {
+  const [form, setForm] = useState({
+    billName: "", billAddr: "", billCity: "", billPostcode: "", billCountry: "France",
+    shipSame: true,
+    shipName: "", shipAddr: "", shipCity: "", shipPostcode: "", shipCountry: "FRANCE",
+    date: "", invoiceNumber: "", shippingMethod: "DHL",
+    sku: "", item: "", unitCost: "", qty: 1, flag: "[A]"
+  });
+  const [preview, setPreview] = useState(false);
+  const barcodeCanvasRef = useRef();
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const vatRate = VAT_RATES[form.billCountry] ?? 0;
+  const unit = parseFloat(form.unitCost) || 0;
+  const qty = parseInt(form.qty) || 1;
+  const lineCost = unit * qty;
+  const tax = vatRate > 0 ? parseFloat((lineCost / (1 + vatRate / 100) * (vatRate / 100)).toFixed(2)) : 0;
+  const exTax = parseFloat((lineCost - tax).toFixed(2));
+  const fmt = n => n.toFixed(2).replace(".", ",");
+  const fmtEur = n => n.toFixed(2);
+
+  const billLines = [form.billName, form.billAddr, [form.billPostcode, form.billCity].filter(Boolean).join(" "), form.billCountry].filter(Boolean);
+  const shipLines = form.shipSame
+    ? [form.billName, form.billAddr, [form.billPostcode, form.billCity].filter(Boolean).join(" "), form.billCountry.toUpperCase()]
+    : [form.shipName, form.shipAddr, [form.shipPostcode, form.shipCity].filter(Boolean).join(" "), form.shipCountry.toUpperCase()];
+
+  const getBarcodeDataURL = (text) => {
+    if (!text) return null;
+    const binary = encodeCode128(text);
+    const barW = 2;
+    const W = binary.length * barW + 20;
+    const H = 46;
+    const bars = [];
+    for (let i = 0; i < binary.length; i++) {
+      if (binary[i] === "1") bars.push(`<rect x="${10 + i * barW}" y="0" width="${barW}" height="${H}" fill="black"/>`);
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" style="background:white">${bars.join("")}</svg>`;
+    return "data:image/svg+xml;base64," + btoa(svg);
+  };
+
+  const barcodeDataURL = form.invoiceNumber ? getBarcodeDataURL(form.invoiceNumber) : null;
+
+  useEffect(() => {
+    if (barcodeCanvasRef.current) drawBarcode(barcodeCanvasRef.current, form.invoiceNumber);
+  }, [form.invoiceNumber]);
+
+  const generateHTML = () => {
+    const barcodeImg = barcodeDataURL
+      ? `<img src="${barcodeDataURL}" style="display:block;height:46px;" />`
+      : `<div style="width:180px;height:46px;background:#eee;"></div>`;
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:Arial,sans-serif; font-size:11px; color:#000; background:#fff; }
+.page { width:794px; min-height:1123px; margin:0 auto; padding:40px 40px 60px; display:flex; flex-direction:column; }
+.header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:24px; }
+.header-left { display:flex; gap:60px; }
+.hcol h3 { font-weight:normal; font-size:11px; margin-bottom:6px; color:#555; }
+.hcol p { font-size:11px; line-height:1.7; }
+.logo-block { text-align:center; }
+.logo { background:#006699; color:white; font-size:26px; font-weight:bold; line-height:1.15; padding:10px 14px; display:inline-block; margin-bottom:6px; }
+.company-info { font-size:9.5px; text-align:center; line-height:1.6; color:#333; }
+.date { margin:4px 0 24px; font-size:11px; }
+.ship-bar { display:flex; justify-content:space-between; align-items:center; border-top:1px solid #ccc; border-bottom:1px solid #ccc; padding:8px 0; margin-bottom:20px; }
+.bc-num { font-size:20px; font-weight:bold; text-align:center; letter-spacing:2px; margin-top:2px; }
+table.items { width:100%; border-collapse:collapse; }
+table.items th { background:#f0f0f0; border:1px solid #bbb; padding:5px 6px; text-align:center; font-size:10px; }
+table.items td { border:1px solid #bbb; padding:6px; font-size:10px; vertical-align:top; }
+.num { text-align:right; } .center { text-align:center; }
+.totals-box { border:1px solid #bbb; border-top:none; width:100%; }
+.totals-box table { width:100%; border-collapse:collapse; }
+.totals-box td { padding:3px 8px; font-size:11px; border:none; }
+.totals-box tr { display:flex; justify-content:flex-end; }
+.lbl { text-align:right; min-width:160px; }
+.amt { text-align:right; min-width:90px; }
+.footer { margin-top:auto; border-top:1px solid #ccc; padding-top:8px; text-align:center; font-size:9px; line-height:1.7; color:#333; }
+</style></head><body><div class="page">
+<div class="header">
+  <div class="header-left">
+    <div class="hcol"><h3>Sales Invoice</h3><p>${billLines.join("<br>")}</p></div>
+    <div class="hcol"><h3>Shipping Address</h3><p>${shipLines.join("<br>")}</p></div>
+  </div>
+  <div class="logo-block">
+    <div class="logo">Mac<br>Store<br>EU</div>
+    <div class="company-info">Mac Store EU<br>3rd Floor 12-16 Bridge Street,<br>Belfast,<br>BT1 1LU<br>United Kingdom<br><br>Tel: +44 (0) 2030049465<br>Email: info@macstoreeu.com</div>
+  </div>
+</div>
+<div class="date">${form.date}</div>
+<div class="ship-bar">
+  <div>Shipping Method: ${form.shippingMethod || "DHL"}</div>
+  <div style="text-align:center">${barcodeImg}<div class="bc-num">${form.invoiceNumber}</div></div>
+</div>
+<table class="items">
+  <thead><tr>
+    <th style="width:95px">SKU</th><th>Item</th><th style="width:58px">Quantity</th>
+    <th style="width:58px">Unit Cost</th><th style="width:50px">Tax Rate</th>
+    <th style="width:52px">Tax</th><th style="width:72px">Cost (ex. Tax)</th><th style="width:68px">Line Cost</th>
+  </tr></thead>
+  <tbody>
+    <tr>
+      <td>${form.sku}</td>
+      <td>${(form.item + (form.flag ? " " + form.flag : "")).toUpperCase()}</td>
+      <td class="center">${qty}</td>
+      <td class="num">${fmt(unit)}</td>
+      <td class="num">${fmt(vatRate)}</td>
+      <td class="num">${fmt(tax)}</td>
+      <td class="num">${fmt(exTax)}</td>
+      <td class="num">${fmt(lineCost)}</td>
+    </tr>
+    <tr><td colspan="8" style="height:40px;border-left:1px solid #bbb;border-right:1px solid #bbb;border-top:none;border-bottom:none;">&nbsp;</td></tr>
+  </tbody>
+</table>
+<div class="totals-box"><table>
+  <tr><td class="lbl">SUB TOTAL:</td><td class="amt">${fmtEur(exTax)} EUR</td></tr>
+  <tr><td class="lbl">POSTAGE (Ex TAX):</td><td class="amt">0.00 EUR</td></tr>
+  <tr><td class="lbl">TAX:</td><td class="amt">${fmtEur(tax)} EUR</td></tr>
+  <tr><td class="lbl"><strong>TOTAL:</strong></td><td class="amt"><strong>${fmtEur(lineCost)} EUR</strong></td></tr>
+</table></div>
+<div class="footer">MGT Europe LTD - 3rd Floor 12-16 Bridge Street, Belfast, Northern Ireland, BT1 1LU<br>Registered in United Kingdom under Companies Act 1985. Company No. NI701332<br>VAT Number: GB450319614 &nbsp;&nbsp;&nbsp; EORI: XI450319614000</div>
+</div></body></html>`;
+  };
+
+  const handlePrint = () => {
+    const w = window.open("", "_blank");
+    w.document.write(generateHTML());
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 500);
+  };
+
+  const sectionHead = (t) => (
+    <div style={{ fontSize: 11, fontWeight: "bold", color: "#006699", borderBottom: "1px solid #006699", paddingBottom: 4, marginBottom: 10, marginTop: 16 }}>{t}</div>
+  );
+
+  return (
+    <div style={{ fontFamily: "Arial, sans-serif", display: "flex", gap: 0, height: "100vh", overflow: "hidden" }}>
+      {/* Form Panel */}
+      <div style={{ width: preview ? 320 : "100%", minWidth: 300, padding: "20px 16px", overflowY: "auto", borderRight: "1px solid #ddd", background: "#fafafa", transition: "width 0.3s" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+          <div style={{ background: "#006699", color: "#fff", fontWeight: "bold", fontSize: 13, padding: "4px 10px" }}>Mac Store EU</div>
+          <span style={{ fontSize: 13, fontWeight: "bold", color: "#333" }}>Invoice Generator</span>
+        </div>
+
+        {sectionHead("📋 Billing Address")}
+        <Field label="Full Name"><input style={inp} value={form.billName} onChange={e => set("billName", e.target.value)} placeholder="e.g. Eric Laffargue" /></Field>
+        <Field label="Address Line"><input style={inp} value={form.billAddr} onChange={e => set("billAddr", e.target.value)} placeholder="e.g. 4 Rue Lescot" /></Field>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}><Field label="Postcode"><input style={inp} value={form.billPostcode} onChange={e => set("billPostcode", e.target.value)} /></Field></div>
+          <div style={{ flex: 2 }}><Field label="City"><input style={inp} value={form.billCity} onChange={e => set("billCity", e.target.value)} /></Field></div>
+        </div>
+        <Field label="Country">
+          <select style={inp} value={form.billCountry} onChange={e => set("billCountry", e.target.value)}>
+            {Object.keys(VAT_RATES).map(c => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "8px 0 4px" }}>
+          <input type="checkbox" id="sameShip" checked={form.shipSame} onChange={e => set("shipSame", e.target.checked)} />
+          <label htmlFor="sameShip" style={{ fontSize: 11, color: "#555" }}>Shipping address same as billing</label>
+        </div>
+
+        {!form.shipSame && (<>
+          {sectionHead("🚚 Shipping Address")}
+          <Field label="Full Name"><input style={inp} value={form.shipName} onChange={e => set("shipName", e.target.value)} /></Field>
+          <Field label="Address Line"><input style={inp} value={form.shipAddr} onChange={e => set("shipAddr", e.target.value)} /></Field>
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ flex: 1 }}><Field label="Postcode"><input style={inp} value={form.shipPostcode} onChange={e => set("shipPostcode", e.target.value)} /></Field></div>
+            <div style={{ flex: 2 }}><Field label="City"><input style={inp} value={form.shipCity} onChange={e => set("shipCity", e.target.value)} /></Field></div>
+          </div>
+          <Field label="Country"><input style={inp} value={form.shipCountry} onChange={e => set("shipCountry", e.target.value)} /></Field>
+        </>)}
+
+        {sectionHead("📅 Invoice Details")}
+        <Field label="Date"><input style={inp} value={form.date} onChange={e => set("date", e.target.value)} placeholder="e.g. 2026 Feb 14" /></Field>
+        <Field label="Invoice Number">
+          <input style={inp} value={form.invoiceNumber} onChange={e => set("invoiceNumber", e.target.value)} placeholder="e.g. INV-120724" />
+          {form.invoiceNumber && (
+            <div style={{ marginTop: 6, background: "#fff", border: "1px solid #ddd", padding: "4px 8px", display: "inline-block" }}>
+              <canvas ref={barcodeCanvasRef} style={{ display: "block" }} />
+              <div style={{ fontSize: 13, fontWeight: "bold", textAlign: "center", letterSpacing: 2 }}>{form.invoiceNumber}</div>
+            </div>
+          )}
+        </Field>
+        <Field label="Shipping Company"><input style={inp} value={form.shippingMethod} onChange={e => set("shippingMethod", e.target.value)} placeholder="e.g. DHL, FedEx, UPS" /></Field>
+
+        {sectionHead("📦 Item")}
+        <Field label="SKU"><input style={inp} value={form.sku} onChange={e => set("sku", e.target.value)} placeholder="e.g. MP648AE2789" /></Field>
+        <Field label="Item Description"><input style={inp} value={form.item} onChange={e => set("item", e.target.value)} placeholder="e.g. Apple iPhone 12 Mini 64 White" /></Field>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <Field label="Flag">
+              <select style={inp} value={form.flag} onChange={e => set("flag", e.target.value)}>
+                <option value="">(none)</option>
+                <option>[A]</option>
+                <option>[P]</option>
+                <option>[B]</option>
+                <option>[C]</option>
+              </select>
+            </Field>
+          </div>
+          <div style={{ flex: 1 }}><Field label="Qty"><input style={inp} type="number" min="1" value={form.qty} onChange={e => set("qty", e.target.value)} /></Field></div>
+          <div style={{ flex: 2 }}><Field label="Unit Cost (€)"><input style={inp} type="number" step="0.01" value={form.unitCost} onChange={e => set("unitCost", e.target.value)} placeholder="0.00" /></Field></div>
+        </div>
+
+        {unit > 0 && (
+          <div style={{ background: "#eef6fb", border: "1px solid #b3d8ee", borderRadius: 4, padding: "10px 12px", fontSize: 11, marginTop: 8, lineHeight: 1.8 }}>
+            <strong>Tax Summary ({form.billCountry} — {vatRate}% VAT)</strong><br />
+            Cost ex. Tax: <strong>€{fmtEur(exTax)}</strong><br />
+            Tax: <strong>€{fmtEur(tax)}</strong><br />
+            Total: <strong>€{fmtEur(lineCost)}</strong>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+          <button onClick={() => setPreview(p => !p)} style={{ flex: 1, padding: "8px", background: "#006699", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: "bold", fontSize: 12 }}>
+            {preview ? "↻ Refresh Preview" : "👁 Preview Invoice"}
+          </button>
+          <button onClick={handlePrint} style={{ flex: 1, padding: "8px", background: "#2a7a2a", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: "bold", fontSize: 12 }}>
+            🖨 Print / Save PDF
+          </button>
+        </div>
+      </div>
+
+      {/* Preview Panel */}
+      {preview && (
+        <div style={{ flex: 1, overflow: "auto", background: "#e0e0e0", padding: 20 }}>
+          <iframe
+            srcDoc={generateHTML()}
+            style={{ width: 794, height: 1123, border: "none", boxShadow: "0 4px 20px rgba(0,0,0,0.2)", background: "#fff", display: "block", margin: "0 auto" }}
+            title="Invoice Preview"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+const root = createRoot(document.getElementById('root'));
+root.render(
+  <StrictMode>
+    <App />
+  </StrictMode>
+);
+</script>
+<style>
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: sans-serif;
+  margin: 20px;
+  padding: 0;
+}
+
+h1 {
+  margin-top: 0;
+  font-size: 22px;
+}
+
+h2 {
+  margin-top: 0;
+  font-size: 20px;
+}
+
+h3 {
+  margin-top: 0;
+  font-size: 18px;
+}
+
+h4 {
+  margin-top: 0;
+  font-size: 16px;
+}
+
+h5 {
+  margin-top: 0;
+  font-size: 14px;
+}
+
+h6 {
+  margin-top: 0;
+  font-size: 12px;
+}
+
+code {
+  font-size: 1.2em;
+}
+
+ul {
+  padding-inline-start: 20px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: sans-serif;
+  margin: 20px;
+  padding: 0;
+}
+
+.square {
+  background: #fff;
+  border: 1px solid #999;
+  float: left;
+  font-size: 24px;
+  font-weight: bold;
+  line-height: 34px;
+  height: 34px;
+  margin-right: -1px;
+  margin-top: -1px;
+  padding: 0;
+  text-align: center;
+  width: 34px;
+}
+
+.board-row:after {
+  clear: both;
+  content: '';
+  display: table;
+}
+
+.status {
+  margin-bottom: 10px;
+}
+.game {
+  display: flex;
+  flex-direction: row;
+}
+
+.game-info {
+  margin-left: 20px;
+}
+
+</style>
+</html>
